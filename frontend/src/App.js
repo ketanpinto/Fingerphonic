@@ -15,6 +15,7 @@ const App = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordedChunks, setRecordedChunks] = useState([]);
   const [recordings, setRecordings] = useState([]);
+  const [audioLevel, setAudioLevel] = useState(0);
   const [fingerStates, setFingerStates] = useState({
     thumb: 0,
     index: 0,
@@ -33,15 +34,35 @@ const App = () => {
   const recorderRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const recordedBlobRef = useRef(null);
+  const meterRef = useRef(null);
+  const audioLevelIntervalRef = useRef(null);
 
   useEffect(() => {
     initializeMediaPipe();
+    return () => {
+      if (audioLevelIntervalRef.current) {
+        clearInterval(audioLevelIntervalRef.current);
+      }
+    };
   }, []);
 
   const startAudioSystem = async () => {
     try {
+      // Resume the audio context if it exists
+      if (Tone.context.state === 'suspended') {
+        await Tone.context.resume();
+      }
+      
       await initializeAudio();
       setNeedsUserInteraction(false);
+      
+      // Play a silent buffer to warm up the audio system
+      const buffer = Tone.context.createBuffer(1, 1, 22050);
+      const source = Tone.context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(Tone.context.destination);
+      source.start(0);
+      
     } catch (error) {
       console.error('Failed to start audio system:', error);
       setAudioError(error.message);
@@ -102,7 +123,7 @@ const App = () => {
       reverbRef.current = new Tone.Reverb({
         decay: 1.5,
         wet: 0
-      });
+      }).toDestination(); // Connect reverb to main output
       
       delayRef.current = new Tone.FeedbackDelay({
         delayTime: "8n",
@@ -131,17 +152,30 @@ const App = () => {
       // Create recorder for capturing processed audio
       recorderRef.current = new Tone.Recorder();
       
-      // Connect audio chain (including recorder for capturing processed audio)
+      // Create meter for audio level monitoring
+      meterRef.current = new Tone.Meter();
+      
+      // Connect audio chain for LIVE PLAYBACK
       micRef.current
         .connect(distortionRef.current)
         .connect(chorusRef.current)
         .connect(delayRef.current)
         .connect(filterRef.current)
-        .connect(reverbRef.current)
-        .connect(recorderRef.current); // Connect to recorder as well
+        .connect(reverbRef.current);
       
-      // Also connect to destination for live audio
-      reverbRef.current.toDestination();
+      // ALSO connect to recorder for recording (parallel connection)
+      reverbRef.current.connect(recorderRef.current);
+      
+      // Connect to meter for level monitoring
+      reverbRef.current.connect(meterRef.current);
+      
+      // Start audio level monitoring
+      audioLevelIntervalRef.current = setInterval(() => {
+        if (meterRef.current) {
+          const level = meterRef.current.getValue();
+          setAudioLevel(Array.isArray(level) ? Math.max(...level) : level);
+        }
+      }, 100);
       
       setAudioReady(true);
       setAudioError(null);
@@ -267,106 +301,222 @@ const App = () => {
     }
 
     try {
+      console.log('Starting recording...');
+      
       // Start Tone.js recorder for audio
       await recorderRef.current.start();
+      console.log('Audio recorder started');
       
       // Get canvas stream for video
       const canvasStream = canvasRef.current.captureStream(30); // 30 FPS
+      console.log('Canvas stream created');
       
       // Create MediaRecorder for video
-      mediaRecorderRef.current = new MediaRecorder(canvasStream, {
-        mimeType: 'video/webm;codecs=vp9'
-      });
+      const options = { mimeType: 'video/webm' };
+      
+      if (!MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
+          options.mimeType = 'video/webm;codecs=vp8';
+        } else if (MediaRecorder.isTypeSupported('video/webm')) {
+          options.mimeType = 'video/webm';
+        } else {
+          console.warn('WebM not supported, using default');
+          delete options.mimeType;
+        }
+      }
+      
+      mediaRecorderRef.current = new MediaRecorder(canvasStream, options);
+      console.log('MediaRecorder created with options:', options);
       
       const chunks = [];
+      
       mediaRecorderRef.current.ondataavailable = (event) => {
+        console.log('Video data available:', event.data.size, 'bytes');
         if (event.data.size > 0) {
           chunks.push(event.data);
         }
       };
       
       mediaRecorderRef.current.onstop = async () => {
-        // Stop Tone.js recorder and get audio
-        const audioBuffer = await recorderRef.current.stop();
+        console.log('MediaRecorder stopped, processing...');
         
-        // Convert audio buffer to blob
-        const audioBlob = await audioBufferToBlob(audioBuffer);
-        
-        // Create video blob
-        const videoBlob = new Blob(chunks, { type: 'video/webm' });
-        
-        // For now, we'll save them separately
-        // TODO: Combine audio and video into single file
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        
-        setRecordings(prev => [...prev, {
-          id: Date.now(),
-          timestamp,
-          videoBlob,
-          audioBlob,
-          name: `recording-${timestamp}`
-        }]);
-        
-        chunks.length = 0;
+        try {
+          // Stop Tone.js recorder and get audio
+          console.log('Stopping audio recorder...');
+          const audioBuffer = await recorderRef.current.stop();
+          console.log('Audio buffer received:', audioBuffer);
+          
+          // Convert audio buffer to blob
+          console.log('Converting audio buffer to blob...');
+          const audioBlob = await audioBufferToBlob(audioBuffer);
+          console.log('Audio blob created:', audioBlob.size, 'bytes');
+          
+          // Create video blob
+          const videoBlob = new Blob(chunks, { type: options.mimeType || 'video/webm' });
+          console.log('Video blob created:', videoBlob.size, 'bytes');
+          
+          // Create recording entry
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const newRecording = {
+            id: Date.now(),
+            timestamp,
+            videoBlob,
+            audioBlob,
+            name: `recording-${timestamp.slice(0, 19)}`
+          };
+          
+          setRecordings(prev => [...prev, newRecording]);
+          console.log('Recording saved successfully');
+          
+          // Clear chunks
+          chunks.length = 0;
+          
+        } catch (error) {
+          console.error('Error processing recording:', error);
+          alert('Error processing recording: ' + error.message);
+        }
       };
       
-      mediaRecorderRef.current.start();
+      mediaRecorderRef.current.onerror = (event) => {
+        console.error('MediaRecorder error:', event.error);
+        alert('Recording error: ' + event.error.message);
+        setIsRecording(false);
+      };
+      
+      mediaRecorderRef.current.start(1000); // Collect data every second
       setIsRecording(true);
+      console.log('Recording started successfully');
       
     } catch (error) {
       console.error('Error starting recording:', error);
       alert('Failed to start recording: ' + error.message);
+      setIsRecording(false);
     }
   };
 
-  const stopRecording = () => {
+  const stopRecording = async () => {
+    console.log('Stop recording requested');
+    
     if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
+      try {
+        console.log('Stopping MediaRecorder...');
+        mediaRecorderRef.current.stop();
+        
+        // Add a small delay to ensure recorder has stopped
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        console.log('Getting audio buffer...');
+        const audioBuffer = await recorderRef.current.stop();
+        
+        if (!audioBuffer || audioBuffer.length === 0) {
+          throw new Error('Empty audio buffer received');
+        }
+        
+        console.log('Audio buffer received:', audioBuffer);
+        const audioBlob = await audioBufferToBlob(audioBuffer);
+        
+        setIsRecording(false);
+        console.log('Recording stopped successfully');
+      } catch (error) {
+        console.error('Error stopping recording:', error);
+        alert('Error processing recording: ' + error.message);
+        setIsRecording(false);
+      }
     }
   };
   
   const audioBufferToBlob = async (audioBuffer) => {
-    const numberOfChannels = audioBuffer.numberOfChannels;
-    const length = audioBuffer.length;
-    const sampleRate = audioBuffer.sampleRate;
-    
-    // Create a WAV file
-    const arrayBuffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
-    const view = new DataView(arrayBuffer);
-    
-    // WAV header
-    const writeString = (offset, string) => {
-      for (let i = 0; i < string.length; i++) {
-        view.setUint8(offset + i, string.charCodeAt(i));
-      }
-    };
-    
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + length * numberOfChannels * 2, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, numberOfChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * numberOfChannels * 2, true);
-    view.setUint16(32, numberOfChannels * 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, 'data');
-    view.setUint32(40, length * numberOfChannels * 2, true);
-    
-    // Write audio data
-    let offset = 44;
-    for (let i = 0; i < length; i++) {
-      for (let channel = 0; channel < numberOfChannels; channel++) {
-        const sample = Math.max(-1, Math.min(1, audioBuffer.getChannelData(channel)[i]));
-        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
-        offset += 2;
-      }
+    try {
+      if (!audioBuffer || 
+        (typeof audioBuffer.numberOfChannels === 'undefined') || 
+        (typeof audioBuffer.length === 'undefined')) {
+      throw new Error('Invalid audio buffer received');
     }
+    const buffer = audioBuffer.get ? audioBuffer.get() : audioBuffer;
     
-    return new Blob([arrayBuffer], { type: 'audio/wav' });
+    // Additional validation
+    if (!buffer || buffer.length === 0 || buffer.numberOfChannels === 0) {
+      throw new Error('Empty audio data in buffer');
+    }
+      
+      const numberOfChannels = buffer.numberOfChannels || 1;
+      const length = buffer.length;
+      const sampleRate = buffer.sampleRate || 44100;
+      
+      console.log('Audio buffer info:', { numberOfChannels, length, sampleRate });
+      
+      // Create a WAV file
+      const bytesPerSample = 2; // 16-bit
+      const blockAlign = numberOfChannels * bytesPerSample;
+      const byteRate = sampleRate * blockAlign;
+      const dataSize = length * blockAlign;
+      const fileSize = 36 + dataSize;
+      
+      const arrayBuffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(arrayBuffer);
+      
+      // WAV header
+      const writeString = (offset, string) => {
+        for (let i = 0; i < string.length; i++) {
+          view.setUint8(offset + i, string.charCodeAt(i));
+        }
+      };
+      
+      // RIFF chunk
+      writeString(0, 'RIFF');
+      view.setUint32(4, fileSize, true);
+      writeString(8, 'WAVE');
+      
+      // fmt chunk
+      writeString(12, 'fmt ');
+      view.setUint32(16, 16, true); // chunk size
+      view.setUint16(20, 1, true); // audio format (PCM)
+      view.setUint16(22, numberOfChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, 16, true); // bits per sample
+      
+      // data chunk
+      writeString(36, 'data');
+      view.setUint32(40, dataSize, true);
+      
+      // Write audio data
+      let offset = 44;
+      
+      // Handle different buffer formats
+      if (buffer.getChannelData) {
+        // Standard AudioBuffer
+        for (let i = 0; i < length; i++) {
+          for (let channel = 0; channel < numberOfChannels; channel++) {
+            const channelData = buffer.getChannelData(channel);
+            const sample = Math.max(-1, Math.min(1, channelData[i]));
+            const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+            view.setInt16(offset, intSample, true);
+            offset += 2;
+          }
+        }
+      } else if (buffer._buffer && buffer._buffer.getChannelData) {
+        // Tone.js buffer wrapper
+        const toneBuffer = buffer._buffer;
+        for (let i = 0; i < length; i++) {
+          for (let channel = 0; channel < numberOfChannels; channel++) {
+            const channelData = toneBuffer.getChannelData(channel);
+            const sample = Math.max(-1, Math.min(1, channelData[i]));
+            const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+            view.setInt16(offset, intSample, true);
+            offset += 2;
+          }
+        }
+      } else {
+        throw new Error('Unsupported audio buffer format');
+      }
+      
+      return new Blob([arrayBuffer], { type: 'audio/wav' });
+    } catch (error) {
+      console.error('Audio conversion error:', error);
+      throw new Error('Failed to process audio: ' + error.message);
+    }
   };
 
   const downloadRecording = (recording, type) => {
@@ -447,6 +597,24 @@ const App = () => {
                 </div>
               </div>
               
+              {/* Audio Level Indicator */}
+              {audioReady && (
+                <div className="mt-3 flex items-center justify-center space-x-2">
+                  <span className="text-sm text-gray-400">Audio Level:</span>
+                  <div className="flex-1 max-w-xs bg-gray-700 rounded-full h-2 relative overflow-hidden">
+                    <div 
+                      className="h-full transition-all duration-100 rounded-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500"
+                      style={{ 
+                        width: `${Math.min(Math.max((audioLevel + 60) / 60 * 100, 0), 100)}%`
+                      }}
+                    />
+                  </div>
+                  <span className="text-xs text-gray-400 w-12">
+                    {Math.round(audioLevel)}dB
+                  </span>
+                </div>
+              )}
+              
               {/* Error Messages */}
               {cameraError && (
                 <div className="mt-2 p-2 bg-red-900 border border-red-600 rounded text-sm">
@@ -462,12 +630,15 @@ const App = () => {
               {/* Start Audio Button */}
               {needsUserInteraction && (
                 <div className="mt-4 flex justify-center">
-                  <button 
-                    onClick={startAudioSystem}
-                    className="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-lg font-semibold transition-colors"
-                  >
-                    🎵 Start Audio System
-                  </button>
+                <button 
+                onClick={async () => {
+                  await startAudioSystem();
+                  // Additional code if needed
+                }}
+                className="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-lg font-semibold transition-colors"
+              >
+                🎵 Start Audio System
+              </button>
                 </div>
               )}
             </div>
@@ -603,7 +774,6 @@ const App = () => {
       </div>
     </div>
   );
-
 };
 
 export default App;
