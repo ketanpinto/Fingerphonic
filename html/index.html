@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Filters Studio</title>
+    <link rel="stylesheet" href="styles.css">
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1640029074/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248258/drawing_utils.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎤 Voice Filters Studio</h1>
+            <p>Real-time voice effects controlled by hand gestures</p>
+            <button id="settingsBtn" class="btn btn-secondary">⚙️ Settings</button>
+        </header>
+
+        <div class="main-content">
+            <!-- Video Preview with Hand Detection -->
+            <div class="video-section">
+                <h2>Live Preview</h2>
+                <div class="video-container">
+                    <video id="videoPreview" autoplay muted playsinline></video>
+                    <canvas id="handCanvas" class="hand-canvas"></canvas>
+                    <div class="video-overlay">
+                        <div id="filterIndicator" class="filter-indicator">No Filter</div>
+                        <div id="gestureIndicator" class="gesture-indicator">No Gesture Detected</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Video Playback Section -->
+            <div class="video-section" id="playbackSection" style="display: none;">
+                <h2>Recording Playback</h2>
+                <div class="video-container">
+                    <video id="playbackVideo" controls></video>
+                </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="controls-section">
+                <div class="filter-controls">
+                    <h3>Voice Filters (Hand Gestures)</h3>
+                    <div class="filter-grid">
+                        <div class="filter-item">
+                            <span class="key">👆</span>
+                            <span class="filter-name">1 Finger - Chorus</span>
+                        </div>
+                        <div class="filter-item">
+                            <span class="key">✌️</span>
+                            <span class="filter-name">2 Fingers - Distortion</span>
+                        </div>
+                        <div class="filter-item">
+                            <span class="key">🤟</span>
+                            <span class="filter-name">3 Fingers - Reverb</span>
+                        </div>
+                        <div class="filter-item">
+                            <span class="key">🖖</span>
+                            <span class="filter-name">4 Fingers - Echo</span>
+                        </div>
+                        <div class="filter-item">
+                            <span class="key">✊</span>
+                            <span class="filter-name">Fist - Clear All</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="recording-controls">
+                    <h3>Recording</h3>
+                    <button id="startRecording" class="btn btn-primary">Start Recording</button>
+                    <button id="stopRecording" class="btn btn-danger" disabled>Stop Recording</button>
+                    <button id="playRecording" class="btn btn-info" disabled>Play Recording</button>
+                    <button id="downloadRecording" class="btn btn-success" disabled>Download Recording</button>
+                </div>
+
+                <div class="status">
+                    <div id="statusMessage" class="status-message">Ready to start</div>
+                    <div id="recordingTime" class="recording-time"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Instructions -->
+        <div class="instructions">
+            <h3>How to Use:</h3>
+            <ol>
+                <li>Allow microphone and camera access when prompted</li>
+                <li>Show your hand to the camera for gesture detection</li>
+                <li>Use hand gestures to apply filters:
+                    <ul>
+                        <li><strong>1 Finger</strong> - Chorus effect</li>
+                        <li><strong>2 Fingers</strong> - Distortion effect</li>
+                        <li><strong>3 Fingers</strong> - Reverb effect</li>
+                        <li><strong>4 Fingers</strong> - Echo effect</li>
+                        <li><strong>Fist</strong> - Clear all filters</li>
+                    </ul>
+                </li>
+                <li>Click "Start Recording" to begin recording</li>
+                <li>Click "Stop Recording" when done</li>
+                <li>Click "Play Recording" to preview your video</li>
+                <li>Download your filtered video</li>
+            </ol>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⚙️ Filter Settings</h2>
+                <span class="close">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="settings-section">
+                    <h3>Master Volume</h3>
+                    <div class="control-group">
+                        <label for="masterVolume">Volume: <span id="masterVolumeValue">50%</span></label>
+                        <input type="range" id="masterVolume" min="0" max="100" value="50" class="slider">
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h3>Chorus Effect</h3>
+                    <div class="control-group">
+                        <label for="chorusDepth">Depth: <span id="chorusDepthValue">0.002</span></label>
+                        <input type="range" id="chorusDepth" min="0" max="0.01" step="0.001" value="0.002" class="slider">
+                    </div>
+                    <div class="control-group">
+                        <label for="chorusRate">Rate: <span id="chorusRateValue">1.5 Hz</span></label>
+                        <input type="range" id="chorusRate" min="0.1" max="5" step="0.1" value="1.5" class="slider">
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h3>Distortion Effect</h3>
+                    <div class="control-group">
+                        <label for="distortionAmount">Amount: <span id="distortionAmountValue">400</span></label>
+                        <input type="range" id="distortionAmount" min="50" max="800" step="10" value="400" class="slider">
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h3>Reverb Effect</h3>
+                    <div class="control-group">
+                        <label for="reverbDuration">Duration: <span id="reverbDurationValue">0.5s</span></label>
+                        <input type="range" id="reverbDuration" min="0.1" max="2" step="0.1" value="0.5" class="slider">
+                    </div>
+                    <div class="control-group">
+                        <label for="reverbDecay">Decay: <span id="reverbDecayValue">0.1</span></label>
+                        <input type="range" id="reverbDecay" min="0.01" max="0.5" step="0.01" value="0.1" class="slider">
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h3>Echo Effect</h3>
+                    <div class="control-group">
+                        <label for="echoDelay">Delay: <span id="echoDelayValue">0.3s</span></label>
+                        <input type="range" id="echoDelay" min="0.1" max="1" step="0.1" value="0.3" class="slider">
+                    </div>
+                    <div class="control-group">
+                        <label for="echoFeedback">Feedback: <span id="echoFeedbackValue">0.3</span></label>
+                        <input type="range" id="echoFeedback" min="0" max="0.8" step="0.05" value="0.3" class="slider">
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h3>Video Settings</h3>
+                    <div class="control-group">
+                        <label for="mirrorVideo">Mirror Video</label>
+                        <input type="checkbox" id="mirrorVideo" checked>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="resetSettings" class="btn btn-secondary">Reset to Defaults</button>
+                <button id="closeSettings" class="btn btn-primary">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html> 
